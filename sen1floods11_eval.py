@@ -1,6 +1,6 @@
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union, cast
+from typing import Dict, List, Optional, Tuple, Union, cast, Callable
 
 import geopandas
 from cropharvest.config import LABELS_FILENAME
@@ -8,26 +8,23 @@ from cropharvest.engineer import TestInstance
 from torch import nn
 from torch.optim import SGD, Adam
 
-from ..dataops import S1_S2_ERA5_SRTM, TAR_BUCKET
-from ..model import FineTuningModel, Mosaiks1d, Seq2Seq
-from ..utils import DEFAULT_SEED, device
-from .cropharvest_extensions import (
-    DEFAULT_NUM_TIMESTEPS,
-    CropHarvest,
-    CropHarvestLabels,
-    DynamicWorldExporter,
-    Engineer,
-    MultiClassCropHarvest,
-    cropharvest_data_dir,
-)
-
-import xarray
+from einops import rearrange, reduce, repeat
 from pyproj import Transformer
-import numpy as np
+import json
 from tqdm import tqdm
-import torch
 from torch.utils.data import DataLoader, TensorDataset
+import torch
+# from torchvision import transforms
+# import torchvision.transforms.functional as F
+import random
+from PIL import Image
+import csv
+import os
+import numpy as np
+import rasterio
+
 import presto
+from presto.presto import Presto
 
 regression = False
 multilabel = False
@@ -35,11 +32,173 @@ num_outputs = 1
 start_month = 1
 num_timesteps = 1
 
-path_to_flood_images = "/dccstor/geofm-finetuning/flood_mapping/sen1floods11/data/data/flood_events/HandLabeled/S2GeodnHand6Bands"
-path_to_labels = "/dccstor/geofm-finetuning/flood_mapping/sen1floods11/data/data/flood_events/HandLabeled/LabelHand"
+path_to_flood_images = "/dccstor/geofm-finetuning/flood_mapping/sen1floods11/data/data/flood_events/HandLabeled/S2GeodnHand6Bands/"
+path_to_labels = "/dccstor/geofm-finetuning/flood_mapping/sen1floods11/data/data/flood_events/HandLabeled/LabelHand/"
 train_split = "/dccstor/geofm-finetuning/flood_mapping/sen1floods11/splits/splits/flood_handlabeled/flood_train_data_S2_geodn.txt"
 valid_split = "/dccstor/geofm-finetuning/flood_mapping/sen1floods11/splits/splits/flood_handlabeled/flood_valid_data_S2_geodn.txt"
 test_split = "/dccstor/geofm-finetuning/flood_mapping/sen1floods11/splits/splits/flood_handlabeled/flood_test_data_S2_geodn.txt"
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+
+class InMemoryDataset(torch.utils.data.Dataset):
+
+    def __init__(self, data_list, preprocess_func):
+        self.data_list = data_list
+        self.preprocess_func = preprocess_func
+
+    def __getitem__(self, i):
+        return self.preprocess_func(self.data_list[i])
+
+    def __len__(self):
+        return len(self.data_list)
+
+
+def processAndAugment(data):
+    (x, y) = data
+    im, label = x.copy(), y.copy()
+
+    # convert to PIL for easier transforms
+    im1 = Image.fromarray(im[0])
+    im2 = Image.fromarray(im[1])
+    label = Image.fromarray(label.squeeze())
+
+    # Get params for random transforms
+    i, j, h, w = transforms.RandomCrop.get_params(im1, (256, 256))
+
+    im1 = F.crop(im1, i, j, h, w)
+    im2 = F.crop(im2, i, j, h, w)
+    label = F.crop(label, i, j, h, w)
+    if random.random() > 0.5:
+        im1 = F.hflip(im1)
+        im2 = F.hflip(im2)
+        label = F.hflip(label)
+    if random.random() > 0.5:
+        im1 = F.vflip(im1)
+        im2 = F.vflip(im2)
+        label = F.vflip(label)
+
+    norm = transforms.Normalize([0.6851, 0.5235], [0.0820, 0.1102])
+    im = torch.stack([transforms.ToTensor()(im1).squeeze(), transforms.ToTensor()(im2).squeeze()])
+    im = norm(im)
+    label = transforms.ToTensor()(label).squeeze()
+    if torch.sum(label.gt(.003) * label.lt(.004)):
+        label *= 255
+    label = label.round()
+
+    return im, label
+
+
+def processTestIm(data):
+    (x, y) = data
+    im, label = x.copy(), y.copy()
+    norm = transforms.Normalize([0.6851, 0.5235], [0.0820, 0.1102])
+
+    # convert to PIL for easier transforms
+    im_c1 = Image.fromarray(im[0]).resize((512, 512))
+    im_c2 = Image.fromarray(im[1]).resize((512, 512))
+    label = Image.fromarray(label.squeeze()).resize((512, 512))
+
+    im_c1s = [F.crop(im_c1, 0, 0, 256, 256), F.crop(im_c1, 0, 256, 256, 256),
+              F.crop(im_c1, 256, 0, 256, 256), F.crop(im_c1, 256, 256, 256, 256)]
+    im_c2s = [F.crop(im_c2, 0, 0, 256, 256), F.crop(im_c2, 0, 256, 256, 256),
+              F.crop(im_c2, 256, 0, 256, 256), F.crop(im_c2, 256, 256, 256, 256)]
+    labels = [F.crop(label, 0, 0, 256, 256), F.crop(label, 0, 256, 256, 256),
+              F.crop(label, 256, 0, 256, 256), F.crop(label, 256, 256, 256, 256)]
+
+    ims = [torch.stack((transforms.ToTensor()(x).squeeze(),
+                        transforms.ToTensor()(y).squeeze()))
+           for (x, y) in zip(im_c1s, im_c2s)]
+
+    ims = [norm(im) for im in ims]
+    ims = torch.stack(ims)
+
+    labels = [(transforms.ToTensor()(label).squeeze()) for label in labels]
+    labels = torch.stack(labels)
+
+    if torch.sum(labels.gt(.003) * labels.lt(.004)):
+        labels *= 255
+    labels = labels.round()
+
+    return ims, labels
+
+
+def getArrFlood(fname):
+    return rasterio.open(fname).read()
+
+
+def download_flood_water_data_from_list(l):
+    i = 0
+    tot_nan = 0
+    tot_good = 0
+    flood_data = []
+    for (im_fname, mask_fname) in l:
+        if not os.path.exists(os.path.join("files/", im_fname)):
+            continue
+        arr_x = np.nan_to_num(getArrFlood(os.path.join("files/", im_fname)))
+        arr_y = getArrFlood(os.path.join("files/", mask_fname))
+        arr_y[arr_y == -1] = 255
+
+        arr_x = np.clip(arr_x, -50, 1)
+        arr_x = (arr_x + 50) / 51
+
+        if i % 100 == 0:
+            print(im_fname, mask_fname)
+        i += 1
+        flood_data.append((arr_x, arr_y))
+
+    return flood_data
+
+
+def load_flood_train_data(input_root, label_root):
+    fname = train_split
+    training_files = []
+    with open(fname) as f:
+        for line in csv.reader(f):
+            training_files.append(
+                tuple((input_root + line[0] + "_S2GeodnHand.tif", label_root + line[0] + "_LabelHand.tif")))
+
+    return download_flood_water_data_from_list(training_files)
+
+
+def load_flood_valid_data(input_root, label_root):
+    fname = valid_split
+    validation_files = []
+    with open(fname) as f:
+        for line in csv.reader(f):
+            validation_files.append(
+                tuple((input_root + line[0] + "_S2GeodnHand.tif", label_root + line[0] + "_LabelHand.tif")))
+
+    return download_flood_water_data_from_list(validation_files)
+
+
+def load_flood_test_data(input_root, label_root):
+    fname = test_split
+    testing_files = []
+    with open(fname) as f:
+        for line in csv.reader(f):
+            testing_files.append(
+                tuple((input_root + line[0] + "_S2GeodnHand.tif", label_root + line[0] + "_LabelHand.tif")))
+
+    return download_flood_water_data_from_list(testing_files)
+
+
+train_data = load_flood_train_data(path_to_flood_images, path_to_labels)
+train_dataset = InMemoryDataset(train_data, processAndAugment)
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=4, shuffle=True, sampler=None,
+                                           batch_sampler=None, num_workers=0, collate_fn=None,
+                                           pin_memory=True, drop_last=False, timeout=0,
+                                           worker_init_fn=None)
+train_iter = iter(train_loader)
+
+valid_data = load_flood_valid_data(path_to_flood_images, path_to_labels)
+valid_dataset = InMemoryDataset(valid_data, processTestIm)
+valid_loader = torch.utils.data.DataLoader(valid_dataset, batch_size=4, shuffle=True, sampler=None,
+                                           batch_sampler=None, num_workers=0, collate_fn=lambda x: (
+        torch.cat([a[0] for a in x], 0), torch.cat([a[1] for a in x], 0)),
+                                           pin_memory=True, drop_last=False, timeout=0,
+                                           worker_init_fn=None)
+valid_iter = iter(valid_loader)
 
 
 @staticmethod
@@ -71,36 +230,35 @@ def dynamic_world_tifs_to_npy():
             np.save(output_folder / output_filename, array)
 
 
-def truncate_timesteps(self, x):
-    if (self.num_timesteps is None) or (x is None):
+def truncate_timesteps(x):
+    if (num_timesteps is None) or (x is None):
         return x
     else:
-        return x[:, : self.num_timesteps]
+        return x[:, : num_timesteps]
 
 
-def finetune(self, pretrained_model, mask: Optional[np.ndarray] = None) -> FineTuningModel:
-    # TODO - where are these controlled?
+def finetune(pretrained_model, mask: Optional[np.ndarray] = None):
+    print("finetune")
+    print(pretrained_model)
     lr, num_grad_steps, k = 0.001, 250, 10
-    model = self._construct_finetuning_model(pretrained_model)
+    model = construct_finetuning_model(pretrained_model)
 
-    # TODO - should this be more intelligent? e.g. first learn the
-    # (randomly initialized) head before modifying parameters for
-    # the whole model?
     opt = SGD(model.parameters(), lr=lr)
     loss_fn = nn.BCELoss(reduction="mean")
-    batch_mask = self._mask_to_batch_tensor(mask, k)
+    batch_mask = mask_to_batch_tensor(mask, k)
 
     for i in range(num_grad_steps):
         if i != 0:
             model.train()
             opt.zero_grad()
 
-        train_x, train_dw, latlons, train_y = self.dataset.sample(k, deterministic=False)
+        # TODO: Sample or instead iter over dataloader?
+        train_x, train_y = train_dataset.sample(k, deterministic=False)
         preds = model(
-            self.truncate_timesteps(
+            truncate_timesteps(
                 torch.from_numpy(S1_S2_ERA5_SRTM.normalize(train_x)).to(device).float()
             ),
-            mask=self.truncate_timesteps(batch_mask),
+            mask=truncate_timesteps(batch_mask),
             dynamic_world=None,
             latlons=None,
             month=None
@@ -115,30 +273,26 @@ def finetune(self, pretrained_model, mask: Optional[np.ndarray] = None) -> FineT
 
 @torch.no_grad()
 def evaluate(
-        self,
-        finetuned_model: Union[FineTuningModel],
+        finetuned_model,
         pretrained_model=None,
         mask: Optional[np.ndarray] = None,
 ) -> Dict:
-    if isinstance(finetuned_model):
-        assert isinstance(pretrained_model, (Mosaiks1d, Seq2Seq))
-
     with tempfile.TemporaryDirectory() as results_dir:
-        for test_id, test_instance, test_dw_instance in self.dataset.test_data(max_size=10000):
+        for test_id, test_instance, test_dw_instance in dataset.test_data(max_size=10000):
             savepath = Path(results_dir) / f"{test_id}.nc"
 
-            test_x = self.truncate_timesteps(
+            test_x = truncate_timesteps(
                 torch.from_numpy(S1_S2_ERA5_SRTM.normalize(test_instance.x)).to(device).float()
             )
             # mypy fails with these lines uncommented, but this is how we will
             # pass the other values to the model
             test_latlons_np = np.stack([test_instance.lats, test_instance.lons], axis=-1)
             test_latlon = torch.from_numpy(test_latlons_np).to(device).float()
-            test_dw = self.truncate_timesteps(
+            test_dw = truncate_timesteps(
                 torch.from_numpy(test_dw_instance.x).to(device).long()
             )
-            batch_mask = self.truncate_timesteps(
-                self._mask_to_batch_tensor(mask, test_x.shape[0])
+            batch_mask = truncate_timesteps(
+                mask_to_batch_tensor(mask, test_x.shape[0])
             )
 
             if isinstance(finetuned_model, FineTuningModel):
@@ -149,7 +303,7 @@ def evaluate(
                         dynamic_world=test_dw,
                         mask=batch_mask,
                         latlons=test_latlon,
-                        month=self.start_month,
+                        month=start_month,
                     )
                         .squeeze(dim=1)
                         .cpu()
@@ -164,7 +318,7 @@ def evaluate(
                         dynamic_world=test_dw,
                         mask=batch_mask,
                         latlons=test_latlon,
-                        month=self.start_month,
+                        month=start_month,
                     )
                         .cpu()
                         .numpy()
@@ -178,11 +332,10 @@ def evaluate(
         combined_results = combined_instance.evaluate_predictions(combined_preds)
 
     prefix = finetuned_model.__class__.__name__
-    return {f"{self.name}: {prefix}_{key}": val for key, val in combined_results.items()}
+    return {f"{name}: {prefix}_{key}": val for key, val in combined_results.items()}
 
 
 def finetuning_results(
-        self,
         pretrained_model,
         model_modes: List[str],
         mask: Optional[np.ndarray] = None,
@@ -191,141 +344,31 @@ def finetuning_results(
         assert x in ["finetune", "Regression", "Random Forest"]
     results_dict = {}
     if "finetune" in model_modes:
-        model = self.finetune(pretrained_model, mask)
-        results_dict.update(self.evaluate(model, None, mask))
+        model = finetune(pretrained_model, mask)
+        results_dict.update(evaluate(model, None, mask))
 
     return results_dict
 
 
-# this is to silence the xarray deprecation warning.
-# Our version of xarray is pinned, but we'll need to fix this
-# when we upgrade
-import warnings
-
-warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-treesat_folder = presto.utils.data_dir / "treesat"
-assert treesat_folder.exists()
-
-# this folder should exist once the s2 file from zenodo has been unzipped
-s2_data_60m = treesat_folder / "s2/60m"
-assert s2_data_60m.exists()
-
-TREESATAI_S2_BANDS = ["B2", "B3", "B4", "B8", "B5", "B6", "B7", "B8A", "B11", "B12", "B1", "B9"]
-
-SPECIES = ["Abies_alba", "Acer_pseudoplatanus"]
-
-# takes a (6, 6) treesat tif file, and returns a
-# (9,1,18) cropharvest eo-style file (with all bands "masked"
-# except for S1 and S2)
-INDICES_IN_TIF_FILE = list(range(0, 6, 2))
-
-with (treesat_folder / "train_filenames.lst").open("r") as f:
-    train_files = [line for line in f if (line.startswith(SPECIES[0]) or line.startswith(SPECIES[1]))]
-with (treesat_folder / "test_filenames.lst").open("r") as f:
-    test_files = [line for line in f if (line.startswith(SPECIES[0]) or line.startswith(SPECIES[1]))]
-
-print(f"{len(train_files)} train files and {len(test_files)} test files")
+def construct_finetuning_model(pretrained_model):
+    model = pretrained_model.construct_finetuning_model(
+        num_outputs=num_outputs,
+        regression=regression,
+    )
+    return model
 
 
-def process_images(filenames):
-    arrays, masks, latlons, image_names, labels, dynamic_worlds = [], [], [], [], [], []
-
-    for filename in tqdm(filenames):
-        tif_file = xarray.open_rasterio(s2_data_60m / filename.strip())
-        crs = tif_file.crs.split("=")[-1]
-        transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
-
-        for x_idx in INDICES_IN_TIF_FILE:
-            for y_idx in INDICES_IN_TIF_FILE:
-                # firstly, get the latitudes and longitudes
-                x, y = tif_file.x[x_idx], tif_file.y[y_idx]
-                lon, lat = transformer.transform(x, y)
-                latlons.append(torch.tensor([lat, lon]))
-
-                # then, get the eo_data, mask and dynamic world
-                s2_data_for_pixel = torch.from_numpy(tif_file.values[:, x_idx, y_idx].astype(int)).float()
-                s2_data_with_time_dimension = s2_data_for_pixel.unsqueeze(0)
-                x, mask, dynamic_world = presto.construct_single_presto_input(
-                    s2=s2_data_with_time_dimension, s2_bands=TREESATAI_S2_BANDS
-                )
-                arrays.append(x)
-                masks.append(mask)
-                dynamic_worlds.append(dynamic_world)
-
-                labels.append(0 if filename.startswith("Abies") else 1)
-                image_names.append(filename)
-
-    return (torch.stack(arrays, axis=0),
-            torch.stack(masks, axis=0),
-            torch.stack(dynamic_worlds, axis=0),
-            torch.stack(latlons, axis=0),
-            torch.tensor(labels),
-            image_names,
-            )
+def mask_to_batch_tensor(
+        mask: Optional[np.ndarray], batch_size: int
+) -> Optional[torch.Tensor]:
+    if mask is not None:
+        return repeat(torch.from_numpy(mask).to(device), "t c -> b t c", b=batch_size).float()
+    return None
 
 
-train_data = process_images(train_files)
-test_data = process_images(test_files)
+path_to_config = "config/default.json"
+model_kwargs = json.load(Path(path_to_config).open("r"))
+model = Presto.construct(**model_kwargs)
 
-batch_size = 64
-
-pretrained_model = presto.Presto.load_pretrained()
-pretrained_model.eval()
-
-# the treesat AI data was collected during the summer,
-# so we estimate the month to be 6 (July)
-month = torch.tensor([6] * train_data[0].shape[0]).long()
-
-dl = DataLoader(
-    TensorDataset(
-        train_data[0].float(),  # x
-        train_data[1].bool(),  # mask
-        train_data[2].long(),  # dynamic world
-        train_data[3].float(),  # latlons
-        month
-    ),
-    batch_size=batch_size,
-    shuffle=False,
-)
-
-features_list = []
-for (x, mask, dw, latlons, month) in tqdm(dl):
-    with torch.no_grad():
-        encodings = (
-            pretrained_model.encoder(
-                x, dynamic_world=dw, mask=mask, latlons=latlons, month=month
-            )
-                .cpu()
-                .numpy()
-        )
-        features_list.append(encodings)
-features_np = np.concatenate(features_list)
-
-# finetuning
-for (x, mask, dw, latlons, month) in tqdm(dl):
-    with torch.no_grad():
-        finetuning_model = pretrained_model.construct_finetuning_model(num_outputs=1)
-        x, mask, dynamic_world = presto.construct_single_presto_input(
-            s2_bands=["B2", "B3", "B4"]
-            # s2_bands = ["B2", "B3", "B4", "B8A", "B11", "B12"]
-        )
-        predictions = finetuning_model(x, mask)
-print(predictions)
-
-# to make a randomly initialized encoder-decoder model
-encoder_decoder = Presto.construct()
-# alternatively, the pre-trained model can also be loaded
-encoder_decoder = Presto.load_pretrained()
-
-# to add a linear transformation to the encoder's output for finetuning
-finetuning_model = encoder_decoder.construct_finetuning_model(num_outputs=1)
-
-x, mask, dynamic_world = presto.construct_single_presto_input(
-    s2_bands=["B2", "B3", "B4"]
-    # s2_bands = ["B2", "B3", "B4", "B8A", "B11", "B12"]
-)
-
-predictions = finetuning_model(x, mask)
-
-print(predictions)
+print(finetuning_results(pretrained_model=model,
+                         model_modes=["finetune"]))
