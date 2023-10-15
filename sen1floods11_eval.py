@@ -14,8 +14,8 @@ import json
 from tqdm import tqdm
 from torch.utils.data import DataLoader, TensorDataset
 import torch
-# from torchvision import transforms
-# import torchvision.transforms.functional as F
+from torchvision import transforms
+import torchvision.transforms.functional as F
 import random
 from PIL import Image
 import csv
@@ -82,9 +82,7 @@ def processAndAugment(data):
     im = torch.stack([transforms.ToTensor()(im1).squeeze(), transforms.ToTensor()(im2).squeeze()])
     im = norm(im)
     label = transforms.ToTensor()(label).squeeze()
-    if torch.sum(label.gt(.003) * label.lt(.004)):
-        label *= 255
-    label = label.round()
+    # TODO: Check labels
 
     return im, label
 
@@ -252,12 +250,11 @@ def finetune(pretrained_model, mask: Optional[np.ndarray] = None):
             model.train()
             opt.zero_grad()
 
+    for i, data in enumerate(train_loader):
         # TODO: Sample or instead iter over dataloader?
-        train_x, train_y = train_dataset.sample(k, deterministic=False)
+        train_x, train_y = data[0], data[i]
         preds = model(
-            truncate_timesteps(
-                torch.from_numpy(S1_S2_ERA5_SRTM.normalize(train_x)).to(device).float()
-            ),
+            truncate_timesteps(train_x.to(device).float()),
             mask=truncate_timesteps(batch_mask),
             dynamic_world=None,
             latlons=None,
