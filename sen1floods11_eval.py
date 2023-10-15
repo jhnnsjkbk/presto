@@ -57,30 +57,43 @@ class InMemoryDataset(torch.utils.data.Dataset):
 def processAndAugment(data):
     (x, y) = data
     im, label = x.copy(), y.copy()
+    label = label.astype(np.float64)
 
-    # convert to PIL for easier transforms
-    im1 = Image.fromarray(im[0])
-    im2 = Image.fromarray(im[1])
+    im1 = Image.fromarray(im[0])  # red
+    im2 = Image.fromarray(im[1])  # green
+    im3 = Image.fromarray(im[2])  # blue
+    im4 = Image.fromarray(im[3])  # NIR narrow
     label = Image.fromarray(label.squeeze())
-
-    # Get params for random transforms
-    i, j, h, w = transforms.RandomCrop.get_params(im1, (256, 256))
+    dim = 128
+    i, j, h, w = transforms.RandomCrop.get_params(im1, (dim, dim))
 
     im1 = F.crop(im1, i, j, h, w)
     im2 = F.crop(im2, i, j, h, w)
+    im3 = F.crop(im3, i, j, h, w)
+    im4 = F.crop(im4, i, j, h, w)
     label = F.crop(label, i, j, h, w)
     if random.random() > 0.5:
         im1 = F.hflip(im1)
         im2 = F.hflip(im2)
+        im3 = F.hflip(im3)
+        im4 = F.hflip(im4)
         label = F.hflip(label)
     if random.random() > 0.5:
         im1 = F.vflip(im1)
         im2 = F.vflip(im2)
+        im3 = F.vflip(im3)
+        im4 = F.vflip(im4)
         label = F.vflip(label)
 
-    norm = transforms.Normalize([0.6851, 0.5235], [0.0820, 0.1102])
-    im = torch.stack([transforms.ToTensor()(im1).squeeze(), transforms.ToTensor()(im2).squeeze()])
-    im = norm(im)
+    norm = transforms.Normalize([0.21531178, 0.20978154, 0.18528642, 0.48253757],
+                                [0.10392396, 0.10210076, 0.11696766, 0.19680527])
+
+    ims = [torch.stack((transforms.ToTensor()(im1).squeeze(),
+                        transforms.ToTensor()(im2).squeeze(),
+                        transforms.ToTensor()(im3).squeeze(),
+                        transforms.ToTensor()(im4).squeeze()))]
+    ims = [norm(im) for im in ims]
+    im = torch.stack(ims).reshape(4, 1, dim, dim)
     label = transforms.ToTensor()(label).squeeze()
     # TODO: Check labels
 
@@ -97,12 +110,12 @@ def processTestIm(data):
     im_c2 = Image.fromarray(im[1]).resize((512, 512))
     label = Image.fromarray(label.squeeze()).resize((512, 512))
 
-    im_c1s = [F.crop(im_c1, 0, 0, 256, 256), F.crop(im_c1, 0, 256, 256, 256),
-              F.crop(im_c1, 256, 0, 256, 256), F.crop(im_c1, 256, 256, 256, 256)]
-    im_c2s = [F.crop(im_c2, 0, 0, 256, 256), F.crop(im_c2, 0, 256, 256, 256),
-              F.crop(im_c2, 256, 0, 256, 256), F.crop(im_c2, 256, 256, 256, 256)]
-    labels = [F.crop(label, 0, 0, 256, 256), F.crop(label, 0, 256, 256, 256),
-              F.crop(label, 256, 0, 256, 256), F.crop(label, 256, 256, 256, 256)]
+    im_c1s = [F.crop(im_c1, 0, 0, 128, 128), F.crop(im_c1, 0, 128, 128, 128),
+              F.crop(im_c1, 128, 0, 128, 128), F.crop(im_c1, 128, 128, 128, 128)]
+    im_c2s = [F.crop(im_c2, 0, 0, 128, 128), F.crop(im_c2, 0, 128, 128, 128),
+              F.crop(im_c2, 128, 0, 128, 128), F.crop(im_c2, 128, 128, 128, 128)]
+    labels = [F.crop(label, 0, 0, 128, 128), F.crop(label, 0, 128, 128, 128),
+              F.crop(label, 128, 0, 128, 128), F.crop(label, 128, 128, 128, 128)]
 
     ims = [torch.stack((transforms.ToTensor()(x).squeeze(),
                         transforms.ToTensor()(y).squeeze()))
@@ -258,7 +271,7 @@ def finetune(pretrained_model, mask: Optional[np.ndarray] = None):
             mask=truncate_timesteps(batch_mask),
             dynamic_world=None,
             latlons=None,
-            month=None
+            month=start_month,
         ).squeeze(dim=1)
         loss = loss_fn(preds, torch.from_numpy(train_y).to(device).float())
 
