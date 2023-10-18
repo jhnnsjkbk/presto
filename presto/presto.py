@@ -411,6 +411,10 @@ class Encoder(nn.Module):
         all_tokens, all_masks = [], []
 
         for channel_group, channel_idxs in self.band_groups.items():
+            print(self.band_groups)
+            print(channel_group)
+            print(channel_idxs)
+            print(x.shape)
             tokens = self.eo_patch_embed[channel_group](x[:, :, channel_idxs])
             channel_embedding = self.channel_embed(
                 torch.tensor(self.band_group_to_idx[channel_group]).long().to(device)

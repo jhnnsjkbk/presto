@@ -24,7 +24,7 @@ MASK_STRATEGIES = (
 # This is to allow a quick expansion of the mask from
 # group-channel space into real-channel space
 BAND_EXPANSION = [len(x) for x in BANDS_GROUPS_IDX.values()]
-SRTM_INDEX = list(BANDS_GROUPS_IDX.keys()).index("SRTM")
+# SRTM_INDEX = list(BANDS_GROUPS_IDX.keys()).index("SRTM")
 
 
 MaskedExample = namedtuple(
@@ -58,7 +58,7 @@ def make_mask(strategy: str, mask_ratio: float) -> Tuple[np.ndarray, np.ndarray]
         if num_tokens_to_mask > 0:
             # we set SRTM to be True - this way, it won't get randomly assigned.
             # at the end of the function, it gets properly assigned
-            mask[:, SRTM_INDEX] = True
+            # mask[:, SRTM_INDEX] = True
             # then, we flatten the mask and dw arrays
             all_tokens_mask = np.concatenate([dw_mask, mask.flatten()])
             unmasked_tokens = all_tokens_mask == False
@@ -83,7 +83,7 @@ def make_mask(strategy: str, mask_ratio: float) -> Tuple[np.ndarray, np.ndarray]
         assert num_tokens_to_mask >= 0
         # tuple because of mypy, which thinks lists can only hold one type
         band_groups: List[Any] = list(range(len(BANDS_GROUPS_IDX))) + ["DW"]
-        band_groups.remove(SRTM_INDEX)
+        # band_groups.remove(SRTM_INDEX)
         band_groups_to_mask = sample(band_groups, num_band_groups_to_mask)
         for band_group in band_groups_to_mask:
             if band_group == "DW":
@@ -113,7 +113,7 @@ def make_mask(strategy: str, mask_ratio: float) -> Tuple[np.ndarray, np.ndarray]
     else:
         raise ValueError(f"Unknown strategy {strategy} not in {MASK_STRATEGIES}")
 
-    mask[:, SRTM_INDEX] = srtm_mask
+    # mask[:, SRTM_INDEX] = srtm_mask
     return np.repeat(mask, BAND_EXPANSION, axis=1), dw_mask
 
 

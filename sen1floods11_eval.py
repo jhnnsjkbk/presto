@@ -93,7 +93,7 @@ def processAndAugment(data):
                         transforms.ToTensor()(im3).squeeze(),
                         transforms.ToTensor()(im4).squeeze()))]
     ims = [norm(im) for im in ims]
-    im = torch.stack(ims).reshape(4, 1, dim, dim)
+    im = torch.stack(ims).reshape(1, 4, dim, dim)
     label = transforms.ToTensor()(label).squeeze()
     # TODO: Check labels
 
@@ -266,9 +266,10 @@ def finetune(pretrained_model, mask: Optional[np.ndarray] = None):
     for i, data in enumerate(train_loader):
         # TODO: Sample or instead iter over dataloader?
         train_x, train_y = data[0], data[i]
+        print(train_x.shape)
         preds = model(
-            truncate_timesteps(train_x.to(device).float()),
-            mask=truncate_timesteps(batch_mask),
+            train_x.to(device).float(),
+            mask=batch_mask,
             dynamic_world=None,
             latlons=None,
             month=start_month,

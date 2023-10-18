@@ -30,19 +30,19 @@ S1_BANDS = ["VV", "VH"]
 S1_SHIFT_VALUES = [25.0, 25.0]
 S1_DIV_VALUES = [25.0, 25.0]
 S2_BANDS = [
-    "B1",
+    #"B1",
     "B2",
     "B3",
     "B4",
-    "B5",
-    "B6",
-    "B7",
-    "B8",
+    #"B5",
+    #"B6",
+    #"B7",
+    #"B8",
     "B8A",
-    "B9",
-    "B10",
-    "B11",
-    "B12",
+    #"B9",
+    #"B10",
+    #"B11",
+    #"B12",
 ]
 S2_SHIFT_VALUES = [float(0.0)] * len(S2_BANDS)
 S2_DIV_VALUES = [float(1e4)] * len(S2_BANDS)
@@ -74,6 +74,7 @@ REMOVED_BANDS = ["B1", "B10"]
 RAW_BANDS = DYNAMIC_BANDS + STATIC_BANDS
 
 BANDS = [x for x in DYNAMIC_BANDS if x not in REMOVED_BANDS] + STATIC_BANDS + ["NDVI"]
+BANDS = [x for x in S2_BANDS]
 # NDVI is between 0 and 1
 ADD_BY = (
     [DYNAMIC_BANDS_SHIFT[i] for i, x in enumerate(DYNAMIC_BANDS) if x not in REMOVED_BANDS]
@@ -86,8 +87,8 @@ DIVIDE_BY = (
     + [1.0]
 )
 
-NUM_TIMESTEPS = 12
-NUM_ORG_BANDS = len(BANDS)
+NUM_TIMESTEPS = 1
+NUM_ORG_BANDS = 4
 TIMESTEPS_IDX = list(range(NUM_TIMESTEPS))
 
 NORMED_BANDS = [x for x in BANDS if x != "B9"]
@@ -95,15 +96,15 @@ NUM_BANDS = len(NORMED_BANDS)
 BANDS_IDX = list(range(NUM_BANDS))
 BANDS_GROUPS_IDX: OrderedDictType[str, List[int]] = OrderedDict(
     {
-        "S1": [NORMED_BANDS.index(b) for b in S1_BANDS],
+        # "S1": [NORMED_BANDS.index(b) for b in S1_BANDS],
         "S2_RGB": [NORMED_BANDS.index(b) for b in ["B2", "B3", "B4"]],
-        "S2_Red_Edge": [NORMED_BANDS.index(b) for b in ["B5", "B6", "B7"]],
-        "S2_NIR_10m": [NORMED_BANDS.index(b) for b in ["B8"]],
+        # "S2_Red_Edge": [NORMED_BANDS.index(b) for b in ["B5", "B6", "B7"]],
+        # "S2_NIR_10m": [NORMED_BANDS.index(b) for b in ["B8"]],
         "S2_NIR_20m": [NORMED_BANDS.index(b) for b in ["B8A"]],
-        "S2_SWIR": [NORMED_BANDS.index(b) for b in ["B11", "B12"]],  # Include B10?
-        "ERA5": [NORMED_BANDS.index(b) for b in ERA5_BANDS],
-        "SRTM": [NORMED_BANDS.index(b) for b in SRTM_BANDS],
-        "NDVI": [NORMED_BANDS.index("NDVI")],
+        # "S2_SWIR": [NORMED_BANDS.index(b) for b in ["B11", "B12"]],  # Include B10?
+        # "ERA5": [NORMED_BANDS.index(b) for b in ERA5_BANDS],
+        # "SRTM": [NORMED_BANDS.index(b) for b in SRTM_BANDS],
+        # "NDVI": [NORMED_BANDS.index("NDVI")],
     }
 )
 
