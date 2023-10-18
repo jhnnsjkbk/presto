@@ -417,11 +417,6 @@ class Encoder(nn.Module):
         all_tokens, all_masks = [], []
 
         for channel_group, channel_idxs in self.band_groups.items():
-            for group_name, group in self.band_groups.items():
-                # print(group_name)
-                # print(group)
-                # print(len(group))
-
             # print("pre-embed shapes", x.shape)
             tokens = self.eo_patch_embed[channel_group](x)
             # print("post-embed shapes", tokens.shape)
