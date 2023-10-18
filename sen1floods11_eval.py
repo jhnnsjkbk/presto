@@ -230,29 +230,14 @@ def finetune(pretrained_model, mask: Optional[np.ndarray] = None):
             model.train()
             opt.zero_grad()
 
-    for (x, labels, month) in tqdm(dl):
-        print(x.shape)
-        preds = model(
-            x.to(device).float(),
-            mask=None,
-            dynamic_world=None,
-            latlons=None,
-            month=month,
-        ).squeeze(dim=1)
-        print(preds.shape)
-        print(labels.shape)
-
-        # Use numpy.unique to count distinct values
-        """     
-        unique_values, counts = np.unique(preds.detach().numpy(), return_counts=True)
-        # Print the unique values and their counts
-        for value, count in zip(unique_values, counts):
-            print(f"preds value: {value}, Count: {count}") """
-        
-        unique_values, counts = np.unique(labels.detach().numpy(), return_counts=True)
-        # Print the unique values and their counts
-        for value, count in zip(unique_values, counts):
-            print(f"labels value: {value}, Count: {count}")
+        for (x, labels, month) in tqdm(dl):
+            preds = model(
+                x.to(device).float(),
+                mask=None,
+                dynamic_world=None,
+                latlons=None,
+                month=month,
+            ).squeeze(dim=1)
 
         loss = loss_fn(preds, labels.squeeze().to(device).float())
         print("loss: ", loss)

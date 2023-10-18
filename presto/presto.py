@@ -403,11 +403,11 @@ class Encoder(nn.Module):
         if mask is None:
             mask = torch.zeros_like(x, device=x.device).float()
 
-        print("month", month)
+        # print("month", month)
         months = month_to_tensor(month, x.shape[0], x.shape[1])
-        print("months", months.shape)
+        # print("months", months.shape)
         month_embedding = self.month_embed(months)
-        print("month_embedding", month_embedding.shape)
+        # print("month_embedding", month_embedding.shape)
         positional_embedding = repeat(
             self.pos_embed[:, : x.shape[1], :], "b t d -> (repeat b) t d", repeat=x.shape[0]
         )
@@ -418,20 +418,20 @@ class Encoder(nn.Module):
 
         for channel_group, channel_idxs in self.band_groups.items():
             for group_name, group in self.band_groups.items():
-                print(group_name)
-                print(group)
-                print(len(group))
+                # print(group_name)
+                # print(group)
+                # print(len(group))
 
-            print("pre-embed shapes", x.shape)
+            # print("pre-embed shapes", x.shape)
             tokens = self.eo_patch_embed[channel_group](x)
-            print("post-embed shapes", tokens.shape)
+            # print("post-embed shapes", tokens.shape)
             channel_embedding = self.channel_embed(
                 torch.tensor(self.band_group_to_idx[channel_group]).long().to(device)
             )
-            print("channel_embedding shapes", channel_embedding.shape)
+            # print("channel_embedding shapes", channel_embedding.shape)
 
             channel_embedding = repeat(channel_embedding, "d -> b t d", b=x.shape[0], t=x.shape[1])
-            print("channel_embedding reshaped shapes", channel_embedding.shape)
+            # print("channel_embedding reshaped shapes", channel_embedding.shape)
 
             if channel_group == "SRTM":
                 # for SRTM, we reduce it to a single token instead of
@@ -446,19 +446,19 @@ class Encoder(nn.Module):
                 )
                 indices = slice(0, 1)
             else:
-                print("month_embedding shapes", month_embedding.shape)
-                print("channel_embedding shapes", channel_embedding.shape)
-                print("positional_embedding shapes", positional_embedding.shape)
+                # print("month_embedding shapes", month_embedding.shape)
+                # print("channel_embedding shapes", channel_embedding.shape)
+                # print("positional_embedding shapes", positional_embedding.shape)
                 channel_wise_positional_embedding = torch.cat(
                     (month_embedding, channel_embedding, positional_embedding), dim=-1
                 )
                 indices = slice(None)
             
-            print("indices shapes", indices)
-            print("channel_wise_positional_embedding shapes", channel_wise_positional_embedding.shape)
-            print("tokens shapes", tokens.shape)
+            # print("indices shapes", indices)
+            # print("channel_wise_positional_embedding shapes", channel_wise_positional_embedding.shape)
+            # print("tokens shapes", tokens.shape)
             tokens = tokens[:, indices]
-            print("tokens shapes", tokens.shape)
+            # print("tokens shapes", tokens.shape)
             tokens += channel_wise_positional_embedding
             all_tokens.append(tokens)
             group_mask = repeat(
