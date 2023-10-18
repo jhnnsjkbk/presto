@@ -291,18 +291,21 @@ class Encoder(nn.Module):
         self.band_group_to_idx = {
             group_name: idx for idx, (group_name, _) in enumerate(self.band_groups.items())
         }
+        """         
         self.band_group_to_idx["dynamic_world"] = max(self.band_group_to_idx.values()) + 1
-
+        """
         self.eo_patch_embed = nn.ModuleDict(
             {
-                group_name: nn.Linear(len(group), embedding_size)
+                group_name: nn.Linear(512*512, embedding_size)
                 for group_name, group in self.band_groups.items()
             }
         )
+        """
         self.dw_embed = nn.Embedding(
             num_embeddings=DynamicWorld2020_2021.class_amount + 1, embedding_dim=embedding_size
-        )
+        ) 
         self.latlon_embed = nn.Linear(3, embedding_size)
+        """
 
         self.blocks = nn.ModuleList(
             [
@@ -400,8 +403,11 @@ class Encoder(nn.Module):
         if mask is None:
             mask = torch.zeros_like(x, device=x.device).float()
 
+        print("month", month)
         months = month_to_tensor(month, x.shape[0], x.shape[1])
+        print("months", months.shape)
         month_embedding = self.month_embed(months)
+        print("month_embedding", month_embedding.shape)
         positional_embedding = repeat(
             self.pos_embed[:, : x.shape[1], :], "b t d -> (repeat b) t d", repeat=x.shape[0]
         )
@@ -411,15 +417,22 @@ class Encoder(nn.Module):
         all_tokens, all_masks = [], []
 
         for channel_group, channel_idxs in self.band_groups.items():
-            print(self.band_groups)
-            print(channel_group)
-            print(channel_idxs)
-            print(x.shape)
-            tokens = self.eo_patch_embed[channel_group](x[:, :, channel_idxs])
+            for group_name, group in self.band_groups.items():
+                print(group_name)
+                print(group)
+                print(len(group))
+
+            print("pre-embed shapes", x.shape)
+            tokens = self.eo_patch_embed[channel_group](x)
+            print("post-embed shapes", tokens.shape)
             channel_embedding = self.channel_embed(
                 torch.tensor(self.band_group_to_idx[channel_group]).long().to(device)
             )
+            print("channel_embedding shapes", channel_embedding.shape)
+
             channel_embedding = repeat(channel_embedding, "d -> b t d", b=x.shape[0], t=x.shape[1])
+            print("channel_embedding reshaped shapes", channel_embedding.shape)
+
             if channel_group == "SRTM":
                 # for SRTM, we reduce it to a single token instead of
                 # a token per timestep
@@ -433,12 +446,19 @@ class Encoder(nn.Module):
                 )
                 indices = slice(0, 1)
             else:
+                print("month_embedding shapes", month_embedding.shape)
+                print("channel_embedding shapes", channel_embedding.shape)
+                print("positional_embedding shapes", positional_embedding.shape)
                 channel_wise_positional_embedding = torch.cat(
                     (month_embedding, channel_embedding, positional_embedding), dim=-1
                 )
                 indices = slice(None)
-
+            
+            print("indices shapes", indices)
+            print("channel_wise_positional_embedding shapes", channel_wise_positional_embedding.shape)
+            print("tokens shapes", tokens.shape)
             tokens = tokens[:, indices]
+            print("tokens shapes", tokens.shape)
             tokens += channel_wise_positional_embedding
             all_tokens.append(tokens)
             group_mask = repeat(
@@ -448,11 +468,13 @@ class Encoder(nn.Module):
             )
             all_masks.append(group_mask)
 
+        """
         # then, dynamic world
         tokens = self.dw_embed(dynamic_world)
         channel_embedding = self.channel_embed(
             torch.tensor(self.band_group_to_idx["dynamic_world"]).long().to(device)
         )
+        
         channel_embedding = repeat(channel_embedding, "d -> b t d", b=x.shape[0], t=x.shape[1])
         positional_embedding = torch.cat(
             (month_embedding, channel_embedding, positional_embedding), dim=-1
@@ -465,14 +487,16 @@ class Encoder(nn.Module):
             dynamic_world == DynamicWorld2020_2021.class_amount, "b t -> b t d", d=tokens.shape[-1]
         )
         all_masks.append(group_mask)
-
+        """
         x = torch.cat(all_tokens, dim=1)  # [batch, timesteps, embedding_dim]
         mask = torch.cat(all_masks, dim=1)  # [batch, timesteps, embedding_dim]
         x, kept_indices, removed_indices = self.mask_tokens(x, mask)
 
+        """     
         # append latlon tokens
         latlon_tokens = self.latlon_embed(self.cartesian(latlons)).unsqueeze(1)
-        x = torch.cat((latlon_tokens, x), dim=1)
+        x = torch.cat((latlon_tokens, x), dim=1) 
+        """
 
         # apply Transformer blocks
         for blk in self.blocks:
@@ -530,8 +554,10 @@ class Decoder(nn.Module):
                 for group_name, group in self.band_groups.items()
             }
         )
+        """
         self.dw_decoder_pred = nn.Linear(decoder_embed_dim, DynamicWorld2020_2021.class_amount)
-
+        """
+        
         self.channel_embeddings = channel_embeddings
         channel_embedding_dims = channel_embeddings.weight.shape[-1]
         remaining_embeddings = decoder_embed_dim - channel_embedding_dims

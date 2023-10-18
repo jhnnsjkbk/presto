@@ -28,9 +28,10 @@ from presto.presto import Presto
 
 regression = False
 multilabel = False
-num_outputs = 1
+num_outputs = 262144
 start_month = 1
 num_timesteps = 1
+batch_size = 64
 
 path_to_flood_images = "/dccstor/geofm-finetuning/flood_mapping/sen1floods11/data/data/flood_events/HandLabeled/S2GeodnHand6Bands/"
 path_to_labels = "/dccstor/geofm-finetuning/flood_mapping/sen1floods11/data/data/flood_events/HandLabeled/LabelHand/"
@@ -64,7 +65,7 @@ def processAndAugment(data):
     im3 = Image.fromarray(im[2])  # blue
     im4 = Image.fromarray(im[3])  # NIR narrow
     label = Image.fromarray(label.squeeze())
-    dim = 128
+    dim = 224
     i, j, h, w = transforms.RandomCrop.get_params(im1, (dim, dim))
 
     im1 = F.crop(im1, i, j, h, w)
@@ -93,7 +94,7 @@ def processAndAugment(data):
                         transforms.ToTensor()(im3).squeeze(),
                         transforms.ToTensor()(im4).squeeze()))]
     ims = [norm(im) for im in ims]
-    im = torch.stack(ims).reshape(1, 4, dim, dim)
+    im = torch.stack(ims).reshape(4, dim, dim)
     label = transforms.ToTensor()(label).squeeze()
     # TODO: Check labels
 
@@ -110,12 +111,12 @@ def processTestIm(data):
     im_c2 = Image.fromarray(im[1]).resize((512, 512))
     label = Image.fromarray(label.squeeze()).resize((512, 512))
 
-    im_c1s = [F.crop(im_c1, 0, 0, 128, 128), F.crop(im_c1, 0, 128, 128, 128),
-              F.crop(im_c1, 128, 0, 128, 128), F.crop(im_c1, 128, 128, 128, 128)]
-    im_c2s = [F.crop(im_c2, 0, 0, 128, 128), F.crop(im_c2, 0, 128, 128, 128),
-              F.crop(im_c2, 128, 0, 128, 128), F.crop(im_c2, 128, 128, 128, 128)]
-    labels = [F.crop(label, 0, 0, 128, 128), F.crop(label, 0, 128, 128, 128),
-              F.crop(label, 128, 0, 128, 128), F.crop(label, 128, 128, 128, 128)]
+    im_c1s = [F.crop(im_c1, 0, 0, 224, 224), F.crop(im_c1, 0, 224, 224, 224),
+              F.crop(im_c1, 224, 0, 224, 224), F.crop(im_c1, 224, 224, 224, 224)]
+    im_c2s = [F.crop(im_c2, 0, 0, 224, 224), F.crop(im_c2, 0, 224, 224, 224),
+              F.crop(im_c2, 224, 0, 224, 224), F.crop(im_c2, 224, 224, 224, 224)]
+    labels = [F.crop(label, 0, 0, 224, 224), F.crop(label, 0, 224, 224, 224),
+              F.crop(label, 224, 0, 224, 224), F.crop(label, 224, 224, 224, 224)]
 
     ims = [torch.stack((transforms.ToTensor()(x).squeeze(),
                         transforms.ToTensor()(y).squeeze()))
@@ -195,22 +196,21 @@ def load_flood_test_data(input_root, label_root):
 
 
 train_data = load_flood_train_data(path_to_flood_images, path_to_labels)
-train_dataset = InMemoryDataset(train_data, processAndAugment)
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=4, shuffle=True, sampler=None,
-                                           batch_sampler=None, num_workers=0, collate_fn=None,
-                                           pin_memory=True, drop_last=False, timeout=0,
-                                           worker_init_fn=None)
-train_iter = iter(train_loader)
-
 valid_data = load_flood_valid_data(path_to_flood_images, path_to_labels)
-valid_dataset = InMemoryDataset(valid_data, processTestIm)
-valid_loader = torch.utils.data.DataLoader(valid_dataset, batch_size=4, shuffle=True, sampler=None,
-                                           batch_sampler=None, num_workers=0, collate_fn=lambda x: (
-        torch.cat([a[0] for a in x], 0), torch.cat([a[1] for a in x], 0)),
-                                           pin_memory=True, drop_last=False, timeout=0,
-                                           worker_init_fn=None)
-valid_iter = iter(valid_loader)
+test_data = load_flood_test_data(path_to_flood_images, path_to_labels)
 
+train_images = np.array([x[0] for x in train_data])
+train_labels = np.array([x[1] for x in train_data])
+val_images = np.array([x[0] for x in valid_data])
+val_labels = np.array([x[1] for x in valid_data])
+test_images = np.array([x[0] for x in test_data])
+test_labels = np.array([x[1] for x in test_data])
+print("train_images", train_images.shape)
+print("train_labels", train_labels.shape)
+print("val_images", val_images.shape)
+print("val_labels", val_labels.shape)
+print("test_images", test_images.shape)
+print("test_labels", test_labels.shape)
 
 @staticmethod
 def dynamic_world_tifs_to_npy():
@@ -263,18 +263,31 @@ def finetune(pretrained_model, mask: Optional[np.ndarray] = None):
             model.train()
             opt.zero_grad()
 
-    for i, data in enumerate(train_loader):
-        # TODO: Sample or instead iter over dataloader?
-        train_x, train_y = data[0], data[i]
-        print(train_x.shape)
+    for (x, labels, month) in tqdm(dl):
+        print(x.shape)
         preds = model(
-            train_x.to(device).float(),
-            mask=batch_mask,
+            x.to(device).float(),
+            mask=None,
             dynamic_world=None,
             latlons=None,
-            month=start_month,
+            month=month,
         ).squeeze(dim=1)
-        loss = loss_fn(preds, torch.from_numpy(train_y).to(device).float())
+        print(preds.shape)
+        print(labels.shape)
+
+        # Use numpy.unique to count distinct values
+        """     
+        unique_values, counts = np.unique(preds.detach().numpy(), return_counts=True)
+        # Print the unique values and their counts
+        for value, count in zip(unique_values, counts):
+            print(f"preds value: {value}, Count: {count}") """
+        
+        unique_values, counts = np.unique(labels.detach().numpy(), return_counts=True)
+        # Print the unique values and their counts
+        for value, count in zip(unique_values, counts):
+            print(f"labels value: {value}, Count: {count}")
+
+        loss = loss_fn(preds, labels.squeeze().to(device).float())
 
         loss.backward()
         opt.step()
@@ -381,5 +394,26 @@ path_to_config = "config/default.json"
 model_kwargs = json.load(Path(path_to_config).open("r"))
 model = Presto.construct(**model_kwargs)
 
+# most floods in northern hemisphere occur during the summer,
+# so we estimate the month to be 6 (July)
+month = torch.tensor([6] * train_images.shape[0]).long()
+train_images = torch.from_numpy(train_images)
+train_labels = torch.from_numpy(train_labels)
+train_images = rearrange(train_images, 'b t h w -> b t (h w)')
+train_labels = rearrange(train_labels, 'b t h w -> b t (h w)')
+train_images = rearrange(train_images, 'b t d -> b t d')
+train_labels = rearrange(train_labels, 'b t d -> b t d')
+
+dl = DataLoader(
+    TensorDataset(
+        train_images,
+        train_labels,
+        month
+    ),
+    batch_size=batch_size,
+    shuffle=False,
+)
+
 print(finetuning_results(pretrained_model=model,
                          model_modes=["finetune"]))
+
