@@ -22,6 +22,8 @@ import csv
 import os
 import numpy as np
 import rasterio
+from sklearn.metrics import jaccard_score, accuracy_score, balanced_accuracy_score, f1_score, precision_score, \
+    recall_score, fbeta_score, precision_recall_fscore_support
 
 import presto
 from presto.presto import Presto
@@ -38,6 +40,7 @@ num_outputs = dim*dim
 start_month = 1
 num_timesteps = 1
 batch_size = 64
+name = "sen1floods11"
 
 path_to_flood_images = "/dccstor/geofm-finetuning/flood_mapping/sen1floods11/data/data/flood_events/HandLabeled/S2GeodnHand6Bands/"
 path_to_labels = "/dccstor/geofm-finetuning/flood_mapping/sen1floods11/data/data/flood_events/HandLabeled/LabelHand/"
@@ -126,35 +129,111 @@ def processAndAugment(data):
 def processTestIm(data):
     (x, y) = data
     im, label = x.copy(), y.copy()
-    norm = transforms.Normalize([0.6851, 0.5235], [0.0820, 0.1102])
-
+    norm = transforms.Normalize([0.107582, 0.13471393, 0.12520133, 0.3236181, 0.2341743, 0.15878009],
+                                [0.07145836, 0.06783548, 0.07323416, 0.09489725, 0.07938496, 0.07089546])
+    
     # convert to PIL for easier transforms
     im_c1 = Image.fromarray(im[0]).resize((512, 512))
     im_c2 = Image.fromarray(im[1]).resize((512, 512))
+    im_c3 = Image.fromarray(im[2]).resize((512, 512))
+    im_c4 = Image.fromarray(im[3]).resize((512, 512))
+    im_c5 = Image.fromarray(im[4]).resize((512, 512))
+    im_c6 = Image.fromarray(im[5]).resize((512, 512))
     label = Image.fromarray(label.squeeze()).resize((512, 512))
 
     im_c1s = [F.crop(im_c1, 0, 0, 224, 224), F.crop(im_c1, 0, 224, 224, 224),
               F.crop(im_c1, 224, 0, 224, 224), F.crop(im_c1, 224, 224, 224, 224)]
+      
     im_c2s = [F.crop(im_c2, 0, 0, 224, 224), F.crop(im_c2, 0, 224, 224, 224),
               F.crop(im_c2, 224, 0, 224, 224), F.crop(im_c2, 224, 224, 224, 224)]
+      
+    im_c3s = [F.crop(im_c3, 0, 0, 224, 224), F.crop(im_c3, 0, 224, 224, 224),
+              F.crop(im_c3, 224, 0, 224, 224), F.crop(im_c3, 224, 224, 224, 224)]
+    
+    im_c4s = [F.crop(im_c4, 0, 0, 224, 224), F.crop(im_c4, 0, 224, 224, 224),
+              F.crop(im_c4, 224, 0, 224, 224), F.crop(im_c4, 224, 224, 224, 224)]
+    
+    im_c5s = [F.crop(im_c5, 0, 0, 224, 224), F.crop(im_c5, 0, 224, 224, 224),
+              F.crop(im_c5, 224, 0, 224, 224), F.crop(im_c5, 224, 224, 224, 224)]
+    
+    im_c6s = [F.crop(im_c6, 0, 0, 224, 224), F.crop(im_c6, 0, 224, 224, 224),
+              F.crop(im_c6, 224, 0, 224, 224), F.crop(im_c6, 224, 224, 224, 224)]
+
     labels = [F.crop(label, 0, 0, 224, 224), F.crop(label, 0, 224, 224, 224),
               F.crop(label, 224, 0, 224, 224), F.crop(label, 224, 224, 224, 224)]
 
-    ims = [torch.stack((transforms.ToTensor()(x).squeeze(),
-                        transforms.ToTensor()(y).squeeze()))
-           for (x, y) in zip(im_c1s, im_c2s)]
+    ims = [torch.stack((transforms.ToTensor()(a).squeeze(),
+                        transforms.ToTensor()(b).squeeze(),
+                        transforms.ToTensor()(c).squeeze(),
+                        transforms.ToTensor()(d).squeeze(),
+                        transforms.ToTensor()(e).squeeze(),
+                        transforms.ToTensor()(f).squeeze()))
+           for (a, b, c, d, e, f) in zip(im_c1s, im_c2s, im_c3s, im_c4s, im_c5s, im_c6s)]
 
-    ims = [norm(im) for im in ims]
-    ims = torch.stack(ims)
+    train_images = [norm(im) for im in ims]
+    train_images = torch.stack(train_images).reshape(4*6, dim, dim)
 
-    labels = [(transforms.ToTensor()(label).squeeze()) for label in labels]
-    labels = torch.stack(labels)
+    train_labels = [(transforms.ToTensor()(label).squeeze()) for label in labels]
+    train_labels = torch.stack(train_labels)
 
+    month = torch.tensor([6] * train_images.shape[0]).long()
+    train_images = rearrange(train_images, 'p h w -> p (h w)')
+    train_labels = rearrange(train_labels, 'p h w -> p (h w)')
+
+    """     
     if torch.sum(labels.gt(.003) * labels.lt(.004)):
         labels *= 255
     labels = labels.round()
+    """
+    return train_images, train_labels, month
 
-    return ims, labels
+def metrics(y_true, y_pred) -> dict():
+    """
+    Returns metrics
+    """
+    y_true, y_pred = y_true.flatten(), y_pred.flatten()
+    y_true = np.uint8(y_true)
+    ignore_index = np.argwhere(y_true == 2)
+    y_true = np.delete(y_true, ignore_index)
+    y_pred = np.delete(y_pred, ignore_index)
+
+    # metrics
+    accuracy = accuracy_score(y_true=y_true, y_pred=y_pred)
+    bal_accuracy = balanced_accuracy_score(y_true=y_true, y_pred=y_pred)
+    precision = precision_score(y_true=y_true, y_pred=y_pred, average="weighted")
+    precision_weighted = precision_score(y_true=y_true, y_pred=y_pred, average="weighted")
+    recall = recall_score(y_true=y_true, y_pred=y_pred, average="weighted")
+    recall_weighted = recall_score(y_true=y_true, y_pred=y_pred, average="weighted")
+    iou_score = jaccard_score(y_true=y_true, y_pred=y_pred, average="weighted")
+    f1 = f1_score(y_true=y_true, y_pred=y_pred, average="weighted")
+    f1_micro = f1_score(y_true=y_true, y_pred=y_pred, average="micro")
+    f1_macro = f1_score(y_true=y_true, y_pred=y_pred, average="macro")
+    f0_5 = fbeta_score(y_true, y_pred, average='weighted', beta=0.5)
+    f0_1 = fbeta_score(y_true, y_pred, average='weighted', beta=0.1)
+    f10 = fbeta_score(y_true, y_pred, average='weighted', beta=10)
+    precision_per_class, recall_per_class, fscore_per_class, support_per_class = precision_recall_fscore_support(y_true, y_pred)
+    iou_score_per_class = jaccard_score(y_true=y_true, y_pred=y_pred, average=None)
+
+    return {"accuracy": accuracy,
+            "bal_accuracy":  bal_accuracy, 
+            "precision": precision, 
+            "precision_weighted": precision_weighted, 
+            "recall": recall, 
+            "recall_weighted": recall_weighted, 
+            "iou_score": iou_score, 
+            "f1": f1, 
+            "f1_micro": f1_micro, 
+            "f1_macro": f1_macro, 
+            "f0_5": f0_5, 
+            "f0_1": f0_1, 
+            "f10": f10, 
+            "precision_per_class": precision_per_class, 
+            "recall_per_class": recall_per_class, 
+            "fscore_per_class": fscore_per_class, 
+            "support_per_class": support_per_class, 
+            "iou_score_per_class": iou_score_per_class
+            }
+
 
 
 def getArrFlood(fname):
@@ -227,7 +306,7 @@ def finetune(pretrained_model, mask: Optional[np.ndarray] = None):
     loss_fn = nn.BCELoss(reduction="mean")
     batch_mask = mask_to_batch_tensor(mask, k)
 
-    for i in range(num_grad_steps):
+    for i in range(1):
         if i != 0:
             model.train()
             opt.zero_grad()
@@ -251,77 +330,39 @@ def finetune(pretrained_model, mask: Optional[np.ndarray] = None):
 
 
 @torch.no_grad()
-def evaluate(
-        finetuned_model,
-        pretrained_model=None,
-        mask: Optional[np.ndarray] = None,
-) -> Dict:
-    with tempfile.TemporaryDirectory() as results_dir:
-        for test_id, test_instance, test_dw_instance in dataset.test_data(max_size=10000):
-            savepath = Path(results_dir) / f"{test_id}.nc"
-
-            test_x = truncate_timesteps(
-                torch.from_numpy(S1_S2_ERA5_SRTM.normalize(test_instance.x)).to(device).float()
+def evaluate(finetuned_model,
+            pretrained_model=None,
+            mask: Optional[np.ndarray] = None,
+            ) -> Dict:
+    finetuned_model.eval()
+    """ 
+    for (x, labels, month) in tqdm(dl):
+        preds = model(
+                x.to(device).float(),
+                mask=None,
+                dynamic_world=None,
+                latlons=None,
+                month=month,
+            ).squeeze(dim=1)
+    """
+    for (x, labels, month) in tqdm(test_dl):
+        preds = (
+            finetuned_model(
+                x.to(device).float(),
+                mask=None,
+                dynamic_world=None,
+                latlons=None,
+                month=month,
             )
-            # mypy fails with these lines uncommented, but this is how we will
-            # pass the other values to the model
-            test_latlons_np = np.stack([test_instance.lats, test_instance.lons], axis=-1)
-            test_latlon = torch.from_numpy(test_latlons_np).to(device).float()
-            test_dw = truncate_timesteps(
-                torch.from_numpy(test_dw_instance.x).to(device).long()
+                .squeeze(dim=1)
+                .cpu()
+                .numpy()
             )
-            batch_mask = truncate_timesteps(
-                mask_to_batch_tensor(mask, test_x.shape[0])
-            )
+        print(preds.shape)
+        print(labels.detach().numpy().shape)
+    results_dir = metrics(preds, labels.detach().numpy())
 
-            if isinstance(finetuned_model, FineTuningModel):
-                finetuned_model.eval()
-                """ 
-                for (x, labels, month) in tqdm(dl):
-                    preds = model(
-                    x.to(device).float(),
-                    mask=None,
-                    dynamic_world=None,
-                    latlons=None,
-                    month=month,
-                ).squeeze(dim=1)
-                """
-                preds = (
-                    finetuned_model(
-                        test_x,
-                        dynamic_world=test_dw,
-                        mask=batch_mask,
-                        latlons=test_latlon,
-                        month=start_month,
-                    )
-                        .squeeze(dim=1)
-                        .cpu()
-                        .numpy()
-                )
-            else:
-                cast(Seq2Seq, pretrained_model).eval()
-                encodings = (
-                    cast(Seq2Seq, pretrained_model)
-                        .encoder(
-                        test_x,
-                        dynamic_world=test_dw,
-                        mask=batch_mask,
-                        latlons=test_latlon,
-                        month=start_month,
-                    )
-                        .cpu()
-                        .numpy()
-                )
-                preds = finetuned_model.predict_proba(encodings)[:, 1]
-            ds = test_instance.to_xarray(preds)
-            ds.to_netcdf(savepath)
-
-        all_nc_files = list(Path(results_dir).glob("*.nc"))
-        combined_instance, combined_preds = TestInstance.load_from_nc(all_nc_files)
-        combined_results = combined_instance.evaluate_predictions(combined_preds)
-
-    prefix = finetuned_model.__class__.__name__
-    return {f"{name}: {prefix}_{key}": val for key, val in combined_results.items()}
+    return results_dir
 
 
 def finetuning_results(
@@ -370,8 +411,17 @@ test_data = load_flood_test_data(path_to_flood_images, path_to_labels)
 train_dataset = InMemoryDataset(data=train_data, 
                                 transform=processAndAugment)
 
+test_dataset = InMemoryDataset(data=test_data, 
+                                transform=processTestIm)
+
 dl = DataLoader(
     train_dataset,
+    batch_size=batch_size,
+    shuffle=False,
+)
+
+test_dl = DataLoader(
+    test_dataset,
     batch_size=batch_size,
     shuffle=False,
 )
