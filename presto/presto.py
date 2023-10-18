@@ -296,7 +296,7 @@ class Encoder(nn.Module):
         """
         self.eo_patch_embed = nn.ModuleDict(
             {
-                group_name: nn.Linear(512*512, embedding_size)
+                group_name: nn.Linear(224*224, embedding_size)
                 for group_name, group in self.band_groups.items()
             }
         )

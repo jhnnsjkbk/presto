@@ -28,7 +28,8 @@ from presto.presto import Presto
 
 regression = False
 multilabel = False
-num_outputs = 262144
+dim = 224
+num_outputs = dim*dim
 start_month = 1
 num_timesteps = 1
 batch_size = 64
@@ -44,15 +45,20 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 class InMemoryDataset(torch.utils.data.Dataset):
 
-    def __init__(self, data_list, preprocess_func):
-        self.data_list = data_list
-        self.preprocess_func = preprocess_func
+    def __init__(self, data, transform):
+        self.data = data
+        self.transform = transform
 
-    def __getitem__(self, i):
-        return self.preprocess_func(self.data_list[i])
+    def __getitem__(self, index):
+        sample = self.data[index]
+
+        if self.transform:
+            sample = self.transform(sample)
+        
+        return sample
 
     def __len__(self):
-        return len(self.data_list)
+        return len(self.data)
 
 
 def processAndAugment(data):
@@ -64,41 +70,55 @@ def processAndAugment(data):
     im2 = Image.fromarray(im[1])  # green
     im3 = Image.fromarray(im[2])  # blue
     im4 = Image.fromarray(im[3])  # NIR narrow
+    im5 = Image.fromarray(im[4])  # SWIR1
+    im6 = Image.fromarray(im[5])  # SWIR2
     label = Image.fromarray(label.squeeze())
-    dim = 224
     i, j, h, w = transforms.RandomCrop.get_params(im1, (dim, dim))
 
     im1 = F.crop(im1, i, j, h, w)
     im2 = F.crop(im2, i, j, h, w)
     im3 = F.crop(im3, i, j, h, w)
     im4 = F.crop(im4, i, j, h, w)
+    im5 = F.crop(im5, i, j, h, w)
+    im6 = F.crop(im6, i, j, h, w)
     label = F.crop(label, i, j, h, w)
     if random.random() > 0.5:
         im1 = F.hflip(im1)
         im2 = F.hflip(im2)
         im3 = F.hflip(im3)
         im4 = F.hflip(im4)
+        im5 = F.hflip(im5)
+        im6 = F.hflip(im6)
         label = F.hflip(label)
     if random.random() > 0.5:
         im1 = F.vflip(im1)
         im2 = F.vflip(im2)
         im3 = F.vflip(im3)
         im4 = F.vflip(im4)
+        im5 = F.vflip(im5)
+        im6 = F.vflip(im6)
         label = F.vflip(label)
 
-    norm = transforms.Normalize([0.21531178, 0.20978154, 0.18528642, 0.48253757],
-                                [0.10392396, 0.10210076, 0.11696766, 0.19680527])
+    norm = transforms.Normalize([0.107582, 0.13471393, 0.12520133, 0.3236181, 0.2341743, 0.15878009],
+                                [0.07145836, 0.06783548, 0.07323416, 0.09489725, 0.07938496, 0.07089546])
 
     ims = [torch.stack((transforms.ToTensor()(im1).squeeze(),
                         transforms.ToTensor()(im2).squeeze(),
                         transforms.ToTensor()(im3).squeeze(),
-                        transforms.ToTensor()(im4).squeeze()))]
-    ims = [norm(im) for im in ims]
-    im = torch.stack(ims).reshape(4, dim, dim)
-    label = transforms.ToTensor()(label).squeeze()
+                        transforms.ToTensor()(im4).squeeze(),
+                        transforms.ToTensor()(im5).squeeze(),
+                        transforms.ToTensor()(im6).squeeze(),
+                        ))]
+    train_images = [norm(im) for im in ims]
+    train_images = torch.stack(train_images).reshape(6, dim, dim)
+    train_labels = transforms.ToTensor()(label).squeeze()
+
+    month = torch.tensor([6] * train_images.shape[0]).long()
+    train_images = rearrange(train_images, 't h w -> t (h w)')
+    train_labels = rearrange(train_labels, 'h w -> (h w)')
     # TODO: Check labels
 
-    return im, label
+    return train_images, train_labels, month
 
 
 def processTestIm(data):
@@ -149,7 +169,7 @@ def download_flood_water_data_from_list(l):
             continue
         arr_x = np.nan_to_num(getArrFlood(os.path.join("files/", im_fname)))
         arr_y = getArrFlood(os.path.join("files/", mask_fname))
-        arr_y[arr_y == -1] = 255
+        arr_y[arr_y == -1] = 0
 
         arr_x = np.clip(arr_x, -50, 1)
         arr_x = (arr_x + 50) / 51
@@ -195,59 +215,6 @@ def load_flood_test_data(input_root, label_root):
     return download_flood_water_data_from_list(testing_files)
 
 
-train_data = load_flood_train_data(path_to_flood_images, path_to_labels)
-valid_data = load_flood_valid_data(path_to_flood_images, path_to_labels)
-test_data = load_flood_test_data(path_to_flood_images, path_to_labels)
-
-train_images = np.array([x[0] for x in train_data])
-train_labels = np.array([x[1] for x in train_data])
-val_images = np.array([x[0] for x in valid_data])
-val_labels = np.array([x[1] for x in valid_data])
-test_images = np.array([x[0] for x in test_data])
-test_labels = np.array([x[1] for x in test_data])
-print("train_images", train_images.shape)
-print("train_labels", train_labels.shape)
-print("val_images", val_images.shape)
-print("val_labels", val_labels.shape)
-print("test_images", test_images.shape)
-print("test_labels", test_labels.shape)
-
-@staticmethod
-def dynamic_world_tifs_to_npy():
-    def process_filename(filestem: str) -> Tuple[int, str]:
-        r"""
-        Given an exported sentinel file, process it to get the dataset
-        it came from, and the index of that dataset
-        """
-        parts = filestem.split("_")[0].split("-")
-        index = parts[0]
-        dataset = "-".join(parts[1:])
-        return int(index), dataset
-
-    input_folder = cropharvest_data_dir() / DynamicWorldExporter.output_folder_name
-    output_folder = cropharvest_data_dir() / "features/dynamic_world_arrays"
-    labels = geopandas.read_file(cropharvest_data_dir() / LABELS_FILENAME)
-
-    for filepath in tqdm(list(input_folder.glob("*.tif"))):
-        index, dataset = process_filename(filepath.stem)
-        output_filename = f"{index}_{dataset}.npy"
-        if not (output_folder / output_filename).exists():
-            rows = labels[((labels["dataset"] == dataset) & (labels["index"] == index))]
-            row = rows.iloc[0]
-            array, _, _ = DynamicWorldExporter.tif_to_npy(
-                filepath, row["lat"], row["lon"], DEFAULT_NUM_TIMESTEPS
-            )
-            assert len(array) == DEFAULT_NUM_TIMESTEPS
-            np.save(output_folder / output_filename, array)
-
-
-def truncate_timesteps(x):
-    if (num_timesteps is None) or (x is None):
-        return x
-    else:
-        return x[:, : num_timesteps]
-
-
 def finetune(pretrained_model, mask: Optional[np.ndarray] = None):
     print("finetune")
     print(pretrained_model)
@@ -288,6 +255,7 @@ def finetune(pretrained_model, mask: Optional[np.ndarray] = None):
             print(f"labels value: {value}, Count: {count}")
 
         loss = loss_fn(preds, labels.squeeze().to(device).float())
+        print("loss: ", loss)
 
         loss.backward()
         opt.step()
@@ -369,7 +337,7 @@ def finetuning_results(
     results_dict = {}
     if "finetune" in model_modes:
         model = finetune(pretrained_model, mask)
-        results_dict.update(evaluate(model, None, mask))
+        # results_dict.update(evaluate(model, None, mask))
 
     return results_dict
 
@@ -394,22 +362,15 @@ path_to_config = "config/default.json"
 model_kwargs = json.load(Path(path_to_config).open("r"))
 model = Presto.construct(**model_kwargs)
 
-# most floods in northern hemisphere occur during the summer,
-# so we estimate the month to be 6 (July)
-month = torch.tensor([6] * train_images.shape[0]).long()
-train_images = torch.from_numpy(train_images)
-train_labels = torch.from_numpy(train_labels)
-train_images = rearrange(train_images, 'b t h w -> b t (h w)')
-train_labels = rearrange(train_labels, 'b t h w -> b t (h w)')
-train_images = rearrange(train_images, 'b t d -> b t d')
-train_labels = rearrange(train_labels, 'b t d -> b t d')
+train_data = load_flood_train_data(path_to_flood_images, path_to_labels)
+valid_data = load_flood_valid_data(path_to_flood_images, path_to_labels)
+test_data = load_flood_test_data(path_to_flood_images, path_to_labels)
+
+train_dataset = InMemoryDataset(data=train_data, 
+                                transform=processAndAugment)
 
 dl = DataLoader(
-    TensorDataset(
-        train_images,
-        train_labels,
-        month
-    ),
+    train_dataset,
     batch_size=batch_size,
     shuffle=False,
 )
