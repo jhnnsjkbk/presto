@@ -26,6 +26,11 @@ import rasterio
 import presto
 from presto.presto import Presto
 
+from presto.utils import (
+    default_model_path,
+    device
+)
+
 regression = False
 multilabel = False
 dim = 224
@@ -39,9 +44,6 @@ path_to_labels = "/dccstor/geofm-finetuning/flood_mapping/sen1floods11/data/data
 train_split = "/dccstor/geofm-finetuning/flood_mapping/sen1floods11/splits/splits/flood_handlabeled/flood_train_data_S2_geodn.txt"
 valid_split = "/dccstor/geofm-finetuning/flood_mapping/sen1floods11/splits/splits/flood_handlabeled/flood_valid_data_S2_geodn.txt"
 test_split = "/dccstor/geofm-finetuning/flood_mapping/sen1floods11/splits/splits/flood_handlabeled/flood_test_data_S2_geodn.txt"
-
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
 
 class InMemoryDataset(torch.utils.data.Dataset):
 
@@ -274,6 +276,16 @@ def evaluate(
 
             if isinstance(finetuned_model, FineTuningModel):
                 finetuned_model.eval()
+                """ 
+                for (x, labels, month) in tqdm(dl):
+                    preds = model(
+                    x.to(device).float(),
+                    mask=None,
+                    dynamic_world=None,
+                    latlons=None,
+                    month=month,
+                ).squeeze(dim=1)
+                """
                 preds = (
                     finetuned_model(
                         test_x,
@@ -322,7 +334,7 @@ def finetuning_results(
     results_dict = {}
     if "finetune" in model_modes:
         model = finetune(pretrained_model, mask)
-        # results_dict.update(evaluate(model, None, mask))
+        results_dict.update(evaluate(model, None, mask))
 
     return results_dict
 
@@ -346,6 +358,10 @@ def mask_to_batch_tensor(
 path_to_config = "config/default.json"
 model_kwargs = json.load(Path(path_to_config).open("r"))
 model = Presto.construct(**model_kwargs)
+
+# can't load state_dict because pretained embedding layer is smaller 
+# model.load_state_dict(torch.load(default_model_path, map_location=device))
+# model.to(device)
 
 train_data = load_flood_train_data(path_to_flood_images, path_to_labels)
 valid_data = load_flood_valid_data(path_to_flood_images, path_to_labels)
