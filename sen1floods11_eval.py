@@ -33,10 +33,14 @@ from presto.utils import (
     device
 )
 
+path_to_config = "config/default.json"
+model_kwargs = json.load(Path(path_to_config).open("r"))
+model = Presto.construct(**model_kwargs)
+image_size = model_kwargs["image_size"]
+
 regression = False
 multilabel = False
-dim = 224
-num_outputs = dim*dim
+num_outputs = image_size*image_size
 start_month = 1
 num_timesteps = 1
 batch_size = 64
@@ -78,7 +82,7 @@ def processAndAugment(data):
     im5 = Image.fromarray(im[4])  # SWIR1
     im6 = Image.fromarray(im[5])  # SWIR2
     label = Image.fromarray(label.squeeze())
-    i, j, h, w = transforms.RandomCrop.get_params(im1, (dim, dim))
+    i, j, h, w = transforms.RandomCrop.get_params(im1, (image_size, image_size))
 
     im1 = F.crop(im1, i, j, h, w)
     im2 = F.crop(im2, i, j, h, w)
@@ -115,7 +119,7 @@ def processAndAugment(data):
                         transforms.ToTensor()(im6).squeeze(),
                         ))]
     train_images = [norm(im) for im in ims]
-    train_images = torch.stack(train_images).reshape(6, dim, dim)
+    train_images = torch.stack(train_images).reshape(6, image_size, image_size)
     train_labels = transforms.ToTensor()(label).squeeze()
 
     month = torch.tensor([6] * train_images.shape[0]).long()
@@ -133,47 +137,56 @@ def processTestIm(data):
                                 [0.07145836, 0.06783548, 0.07323416, 0.09489725, 0.07938496, 0.07089546])
     
     # convert to PIL for easier transforms
-    im_c1 = Image.fromarray(im[0]).resize((512, 512))
-    im_c2 = Image.fromarray(im[1]).resize((512, 512))
-    im_c3 = Image.fromarray(im[2]).resize((512, 512))
-    im_c4 = Image.fromarray(im[3]).resize((512, 512))
-    im_c5 = Image.fromarray(im[4]).resize((512, 512))
-    im_c6 = Image.fromarray(im[5]).resize((512, 512))
-    label = Image.fromarray(label.squeeze()).resize((512, 512))
+    im_c1 = Image.fromarray(im[0]).resize((image_size, image_size))
+    im_c2 = Image.fromarray(im[1]).resize((image_size, image_size))
+    im_c3 = Image.fromarray(im[2]).resize((image_size, image_size))
+    im_c4 = Image.fromarray(im[3]).resize((image_size, image_size))
+    im_c5 = Image.fromarray(im[4]).resize((image_size, image_size))
+    im_c6 = Image.fromarray(im[5]).resize((image_size, image_size))
+    label = Image.fromarray(label.squeeze()).resize((image_size, image_size))
 
-    im_c1s = [F.crop(im_c1, 0, 0, 224, 224), F.crop(im_c1, 0, 224, 224, 224),
-              F.crop(im_c1, 224, 0, 224, 224), F.crop(im_c1, 224, 224, 224, 224)]
+    im_c1s = [F.crop(im_c1, 0, 0, image_size, image_size), F.crop(im_c1, 0, image_size, image_size, image_size),
+              F.crop(im_c1, image_size, 0, image_size, image_size), F.crop(im_c1, image_size, image_size, image_size, image_size)]
       
-    im_c2s = [F.crop(im_c2, 0, 0, 224, 224), F.crop(im_c2, 0, 224, 224, 224),
-              F.crop(im_c2, 224, 0, 224, 224), F.crop(im_c2, 224, 224, 224, 224)]
+    im_c2s = [F.crop(im_c2, 0, 0, image_size, image_size), F.crop(im_c2, 0, image_size, image_size, image_size),
+              F.crop(im_c2, image_size, 0, image_size, image_size), F.crop(im_c2, image_size, image_size, image_size, image_size)]
       
-    im_c3s = [F.crop(im_c3, 0, 0, 224, 224), F.crop(im_c3, 0, 224, 224, 224),
-              F.crop(im_c3, 224, 0, 224, 224), F.crop(im_c3, 224, 224, 224, 224)]
+    im_c3s = [F.crop(im_c3, 0, 0, image_size, image_size), F.crop(im_c3, 0, image_size, image_size, image_size),
+              F.crop(im_c3, image_size, 0, image_size, image_size), F.crop(im_c3, image_size, image_size, image_size, image_size)]
     
-    im_c4s = [F.crop(im_c4, 0, 0, 224, 224), F.crop(im_c4, 0, 224, 224, 224),
-              F.crop(im_c4, 224, 0, 224, 224), F.crop(im_c4, 224, 224, 224, 224)]
+    im_c4s = [F.crop(im_c4, 0, 0, image_size, image_size), F.crop(im_c4, 0, image_size, image_size, image_size),
+              F.crop(im_c4, image_size, 0, image_size, image_size), F.crop(im_c4, image_size, image_size, image_size, image_size)]
     
-    im_c5s = [F.crop(im_c5, 0, 0, 224, 224), F.crop(im_c5, 0, 224, 224, 224),
-              F.crop(im_c5, 224, 0, 224, 224), F.crop(im_c5, 224, 224, 224, 224)]
+    im_c5s = [F.crop(im_c5, 0, 0, image_size, image_size), F.crop(im_c5, 0, image_size, image_size, image_size),
+              F.crop(im_c5, image_size, 0, image_size, image_size), F.crop(im_c5, image_size, image_size, image_size, image_size)]
     
-    im_c6s = [F.crop(im_c6, 0, 0, 224, 224), F.crop(im_c6, 0, 224, 224, 224),
-              F.crop(im_c6, 224, 0, 224, 224), F.crop(im_c6, 224, 224, 224, 224)]
+    im_c6s = [F.crop(im_c6, 0, 0, image_size, image_size), F.crop(im_c6, 0, image_size, image_size, image_size),
+              F.crop(im_c6, image_size, 0, image_size, image_size), F.crop(im_c6, image_size, image_size, image_size, image_size)]
 
-    labels = [F.crop(label, 0, 0, 224, 224), F.crop(label, 0, 224, 224, 224),
-              F.crop(label, 224, 0, 224, 224), F.crop(label, 224, 224, 224, 224)]
+    labels = [F.crop(label, 0, 0, image_size, image_size), F.crop(label, 0, image_size, image_size, image_size),
+              F.crop(label, image_size, 0, image_size, image_size), F.crop(label, image_size, image_size, image_size, image_size)]
 
+    """     
     ims = [torch.stack((transforms.ToTensor()(a).squeeze(),
                         transforms.ToTensor()(b).squeeze(),
                         transforms.ToTensor()(c).squeeze(),
                         transforms.ToTensor()(d).squeeze(),
                         transforms.ToTensor()(e).squeeze(),
                         transforms.ToTensor()(f).squeeze()))
-           for (a, b, c, d, e, f) in zip(im_c1s, im_c2s, im_c3s, im_c4s, im_c5s, im_c6s)]
-
+           for (a, b, c, d, e, f) in zip(im_c1s, im_c2s, im_c3s, im_c4s, im_c5s, im_c6s)] 
+    """
+    ims = [torch.stack((transforms.ToTensor()(im_c1).squeeze(),
+                        transforms.ToTensor()(im_c2).squeeze(),
+                        transforms.ToTensor()(im_c3).squeeze(),
+                        transforms.ToTensor()(im_c4).squeeze(),
+                        transforms.ToTensor()(im_c5).squeeze(),
+                        transforms.ToTensor()(im_c6).squeeze()))]
     train_images = [norm(im) for im in ims]
-    train_images = torch.stack(train_images).reshape(4*6, dim, dim)
+    # train_images = torch.stack(train_images).reshape(4*6, image_size, image_size)
+    train_images = torch.stack(train_images).reshape(6, image_size, image_size)
 
-    train_labels = [(transforms.ToTensor()(label).squeeze()) for label in labels]
+    # train_labels = [(transforms.ToTensor()(label).squeeze()) for label in labels]
+    train_labels = [(transforms.ToTensor()(label).squeeze())]
     train_labels = torch.stack(train_labels)
 
     month = torch.tensor([6] * train_images.shape[0]).long()
@@ -345,8 +358,10 @@ def evaluate(finetuned_model,
                 month=month,
             ).squeeze(dim=1)
     """
-    for (x, labels, month) in tqdm(test_dl):
-        preds = (
+    preds = list()
+    labels = list()
+    for (x, label, month) in tqdm(test_dl):
+        pred = (
             finetuned_model(
                 x.to(device).float(),
                 mask=None,
@@ -356,11 +371,15 @@ def evaluate(finetuned_model,
             )
                 .squeeze(dim=1)
                 .cpu()
-                .numpy()
+                #.numpy()
             )
-        print(preds.shape)
-        print(labels.detach().numpy().shape)
-    results_dir = metrics(preds, labels.detach().numpy())
+        print(pred.shape)
+        print(label.shape)
+        preds.append(pred)
+        labels.append(label.squeeze())
+    preds = torch.cat((preds[0], preds[1]), dim=0).cpu().numpy()
+    labels = torch.cat((labels[0], labels[1]), dim=0).cpu().numpy()
+    results_dir = metrics(preds, labels)
 
     return results_dir
 

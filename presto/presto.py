@@ -281,6 +281,7 @@ class Encoder(nn.Module):
         mlp_ratio=2,
         num_heads=8,
         max_sequence_length=24,
+        image_size=512
     ):
         super().__init__()
 
@@ -296,7 +297,7 @@ class Encoder(nn.Module):
         """
         self.eo_patch_embed = nn.ModuleDict(
             {
-                group_name: nn.Linear(224*224, embedding_size)
+                group_name: nn.Linear(image_size*image_size, embedding_size)
                 for group_name, group in self.band_groups.items()
             }
         )
@@ -774,6 +775,7 @@ class Presto(Seq2Seq):
         decoder_depth=2,
         decoder_num_heads=8,
         max_sequence_length=24,
+        image_size=512,
     ):
         encoder = Encoder(
             embedding_size=encoder_embedding_size,
@@ -783,6 +785,7 @@ class Presto(Seq2Seq):
             mlp_ratio=mlp_ratio,
             num_heads=encoder_num_heads,
             max_sequence_length=max_sequence_length,
+            image_size=image_size,
         )
         decoder = Decoder(
             channel_embeddings=encoder.channel_embed,
